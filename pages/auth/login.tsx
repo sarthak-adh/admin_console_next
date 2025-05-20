@@ -11,8 +11,9 @@ import { useRouter } from 'next/router';
 import { useTranslation } from 'next-i18next';
 import React, { type ReactElement, useEffect, useState, useRef } from 'react';
 import type { ComponentStatus } from 'react-daisyui/dist/types';
-import { getCsrfToken, signIn, useSession } from 'next-auth/react';
+import { useSession } from 'next-auth/react';
 import { serverSideTranslations } from 'next-i18next/serverSideTranslations';
+import { getHawcxAuth } from '@/lib/hawcx';
 
 import env from '@/lib/env';
 import type { NextPageWithLayout } from 'types';
@@ -22,7 +23,6 @@ import GoogleButton from '@/components/auth/GoogleButton';
 import { Alert, InputWithLabel, Loading } from '@/components/shared';
 import { authProviderEnabled } from '@/lib/auth';
 import Head from 'next/head';
-import TogglePasswordVisibility from '@/components/shared/TogglePasswordVisibility';
 import AgreeMessage from '@/components/auth/AgreeMessage';
 import GoogleReCAPTCHA from '@/components/shared/GoogleReCAPTCHA';
 import ReCAPTCHA from 'react-google-recaptcha';
@@ -35,23 +35,19 @@ interface Message {
 
 const Login: NextPageWithLayout<
   InferGetServerSidePropsType<typeof getServerSideProps>
-> = ({ csrfToken, authProviders, recaptchaSiteKey }) => {
+> = ({ authProviders, recaptchaSiteKey }) => {
   const router = useRouter();
   const { status } = useSession();
   const { t } = useTranslation('common');
   const [recaptchaToken, setRecaptchaToken] = useState<string>('');
   const [message, setMessage] = useState<Message>({ text: null, status: null });
-  const [isPasswordVisible, setIsPasswordVisible] = useState<boolean>(false);
+  const [step, setStep] = useState<'email' | 'otp'>('email');
   const recaptchaRef = useRef<ReCAPTCHA>(null);
 
   const { error, success, token } = router.query as {
     error: string;
     success: string;
     token: string;
-  };
-
-  const handlePasswordVisibility = () => {
-    setIsPasswordVisible((prev) => !prev);
   };
 
   useEffect(() => {
@@ -71,32 +67,41 @@ const Login: NextPageWithLayout<
   const formik = useFormik({
     initialValues: {
       email: '',
-      password: '',
+      otp: '',
     },
     validationSchema: Yup.object().shape({
       email: Yup.string().required().email().max(maxLengthPolicies.email),
-      password: Yup.string().required().max(maxLengthPolicies.password),
+      otp: Yup.string().when('$step', {
+        is: 'otp',
+        then: (schema) => schema.required(),
+        otherwise: (schema) => schema.notRequired(),
+      }),
     }),
+    validationContext: { step },
     onSubmit: async (values) => {
-      const { email, password } = values;
-
+      const hawcx = await getHawcxAuth();
       setMessage({ text: null, status: null });
 
-      const response = await signIn('credentials', {
-        email,
-        password,
-        csrfToken,
-        redirect: false,
-        callbackUrl: redirectUrl,
-        recaptchaToken,
-      });
-
-      formik.resetForm();
-      recaptchaRef.current?.reset();
-
-      if (response && !response.ok) {
-        setMessage({ text: response.error, status: 'error' });
-        return;
+      if (step === 'email') {
+        const res = await hawcx.signIn(values.email);
+        if (res.success && res.data?.access_token) {
+          sessionStorage.setItem('access_token', res.data.access_token);
+          router.push(redirectUrl);
+        } else if (res.success) {
+          setStep('otp');
+        } else {
+          setMessage({ text: res.message, status: 'error' });
+        }
+      } else {
+        const verify = await hawcx.verifyOTP(values.otp);
+        if (verify.success) {
+          if (verify.data?.access_token) {
+            sessionStorage.setItem('access_token', verify.data.access_token);
+          }
+          router.push(redirectUrl);
+        } else {
+          setMessage({ text: verify.message, status: 'error' });
+        }
       }
     },
   });
@@ -141,36 +146,18 @@ const Login: NextPageWithLayout<
                 value={formik.values.email}
                 error={formik.touched.email ? formik.errors.email : undefined}
                 onChange={formik.handleChange}
+                disabled={step === 'otp'}
               />
-              <div className="relative flex">
+              {step === 'otp' && (
                 <InputWithLabel
-                  type={isPasswordVisible ? 'text' : 'password'}
-                  name="password"
-                  placeholder={t('password')}
-                  value={formik.values.password}
-                  label={
-                    <label className="label">
-                      <span className="label-text">{t('password')}</span>
-                      <span className="label-text-alt">
-                        <Link
-                          href="/auth/forgot-password"
-                          className="text-sm text-primary hover:text-[color-mix(in_oklab,oklch(var(--p)),black_7%)]"
-                        >
-                          {t('forgot-password')}
-                        </Link>
-                      </span>
-                    </label>
-                  }
-                  error={
-                    formik.touched.password ? formik.errors.password : undefined
-                  }
+                  type="text"
+                  name="otp"
+                  placeholder={t('verification-code')}
+                  value={formik.values.otp}
+                  error={formik.touched.otp ? formik.errors.otp : undefined}
                   onChange={formik.handleChange}
                 />
-                <TogglePasswordVisibility
-                  isPasswordVisible={isPasswordVisible}
-                  handlePasswordVisibility={handlePasswordVisibility}
-                />
-              </div>
+              )}
               <GoogleReCAPTCHA
                 recaptchaRef={recaptchaRef}
                 onChange={setRecaptchaToken}
@@ -243,7 +230,6 @@ export const getServerSideProps = async (
   return {
     props: {
       ...(locale ? await serverSideTranslations(locale, ['common']) : {}),
-      csrfToken: await getCsrfToken(context),
       authProviders: authProviderEnabled(),
       recaptchaSiteKey: env.recaptcha.siteKey,
     },

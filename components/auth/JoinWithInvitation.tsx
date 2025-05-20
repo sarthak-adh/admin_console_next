@@ -4,21 +4,16 @@ import {
   Loading,
   WithLoadingAndError,
 } from '@/components/shared';
-import {
-  defaultHeaders,
-  maxLengthPolicies,
-  passwordPolicies,
-} from '@/lib/common';
+import { maxLengthPolicies } from '@/lib/common';
 import { useFormik } from 'formik';
 import useInvitation from 'hooks/useInvitation';
 import { useTranslation } from 'next-i18next';
 import { useRouter } from 'next/router';
 import { Button } from 'react-daisyui';
 import toast from 'react-hot-toast';
-import type { ApiResponse } from 'types';
 import * as Yup from 'yup';
-import TogglePasswordVisibility from '../shared/TogglePasswordVisibility';
 import { useRef, useState } from 'react';
+import { getHawcxAuth } from '@/lib/hawcx';
 import AgreeMessage from './AgreeMessage';
 import GoogleReCAPTCHA from '../shared/GoogleReCAPTCHA';
 import ReCAPTCHA from 'react-google-recaptcha';
@@ -30,10 +25,11 @@ interface JoinWithInvitationProps {
 
 const JoinUserSchema = Yup.object().shape({
   name: Yup.string().required().max(maxLengthPolicies.name),
-  password: Yup.string()
-    .required()
-    .min(passwordPolicies.minLength)
-    .max(maxLengthPolicies.password),
+  otp: Yup.string().when('$step', {
+    is: 'otp',
+    then: (schema) => schema.required(),
+    otherwise: (schema) => schema.notRequired(),
+  }),
   sentViaEmail: Yup.boolean().required(),
   email: Yup.string()
     .max(maxLengthPolicies.email)
@@ -49,49 +45,41 @@ const JoinWithInvitation = ({
 }: JoinWithInvitationProps) => {
   const router = useRouter();
   const { t } = useTranslation('common');
-  const [isPasswordVisible, setIsPasswordVisible] = useState<boolean>(false);
+  const [step, setStep] = useState<'form' | 'otp'>('form');
   const { isLoading, error, invitation } = useInvitation();
   const [recaptchaToken, setRecaptchaToken] = useState<string>('');
   const recaptchaRef = useRef<ReCAPTCHA>(null);
-
-  const handlePasswordVisibility = () => {
-    setIsPasswordVisible((prev) => !prev);
-  };
 
   const formik = useFormik({
     initialValues: {
       name: '',
       email: '',
-      password: '',
+      otp: '',
       sentViaEmail: invitation?.sentViaEmail || true,
     },
     validationSchema: JoinUserSchema,
+    validationContext: { step },
     enableReinitialize: true,
     validateOnChange: false,
     validateOnBlur: false,
     onSubmit: async (values) => {
-      const response = await fetch('/api/auth/join', {
-        method: 'POST',
-        headers: defaultHeaders,
-        body: JSON.stringify({
-          ...values,
-          recaptchaToken,
-          inviteToken,
-        }),
-      });
-
-      const json = (await response.json()) as ApiResponse;
-
-      recaptchaRef.current?.reset();
-
-      if (!response.ok) {
-        toast.error(json.error.message);
-        return;
+      const hawcx = await getHawcxAuth();
+      if (step === 'form') {
+        const res = await hawcx.signUp(values.email);
+        if (res.success) {
+          setStep('otp');
+        } else {
+          toast.error(res.message);
+        }
+      } else {
+        const verify = await hawcx.verifyOTP(values.otp);
+        if (verify.success) {
+          toast.success(t('successfully-joined'));
+          router.push(`/auth/login?token=${inviteToken}`);
+        } else {
+          toast.error(verify.message);
+        }
       }
-
-      formik.resetForm();
-      toast.success(t('successfully-joined'));
-      router.push(`/auth/login?token=${inviteToken}`);
     },
   });
 
@@ -135,21 +123,17 @@ const JoinWithInvitation = ({
           />
         )}
 
-        <div className="relative flex">
+        {step === 'otp' && (
           <InputWithLabel
-            type={isPasswordVisible ? 'text' : 'password'}
-            label={t('password')}
-            name="password"
-            placeholder={t('password')}
-            value={formik.values.password}
-            error={formik.errors.password}
+            type="text"
+            label={t('verification-code')}
+            name="otp"
+            placeholder={t('verification-code')}
+            value={formik.values.otp}
+            error={formik.errors.otp}
             onChange={formik.handleChange}
           />
-          <TogglePasswordVisibility
-            isPasswordVisible={isPasswordVisible}
-            handlePasswordVisibility={handlePasswordVisibility}
-          />
-        </div>
+        )}
         <GoogleReCAPTCHA
           recaptchaRef={recaptchaRef}
           onChange={setRecaptchaToken}
