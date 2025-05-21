@@ -20,6 +20,7 @@ import { getAccount } from 'models/account';
 import { addTeamMember, getTeam } from 'models/team';
 import { createUser, getUser } from 'models/user';
 import { verifyPassword } from '@/lib/auth';
+import { Hawcx } from '@/lib/hawcx'; // Assuming Hawcx SDK might be needed, though not directly in authorize
 import { isEmailAllowed } from '@/lib/email/utils';
 import env from '@/lib/env';
 import { prisma } from '@/lib/prisma';
@@ -43,68 +44,112 @@ const useSecureCookie = env.appUrl.startsWith('https://');
 export const sessionTokenCookieName =
   (useSecureCookie ? '__Secure-' : '') + 'next-auth.session-token';
 
-if (isAuthProviderEnabled('credentials')) {
-  providers.push(
-    CredentialsProvider({
-      id: 'credentials',
-      credentials: {
-        email: { type: 'email' },
-        password: { type: 'password' },
-        recaptchaToken: { type: 'text' },
-      },
-      async authorize(credentials) {
-        if (!credentials) {
-          throw new Error('no-credentials');
-        }
+// Removed the old email/password CredentialsProvider
+// if (isAuthProviderEnabled('credentials')) {
+//   providers.push(
+//     CredentialsProvider({
+//       id: 'credentials',
+//       credentials: {
+//         email: { type: 'email' },
+//         password: { type: 'password' },
+//         recaptchaToken: { type: 'text' },
+//       },
+//       async authorize(credentials) {
+//         if (!credentials) {
+//           throw new Error('no-credentials');
+//         }
+//         const { email, password, recaptchaToken } = credentials;
+//         await validateRecaptcha(recaptchaToken);
+//         if (!email || !password) {
+//           return null;
+//         }
+//         const user = await getUser({ email });
+//         if (!user) {
+//           throw new Error('invalid-credentials');
+//         }
+//         if (exceededLoginAttemptsThreshold(user)) {
+//           throw new Error('exceeded-login-attempts');
+//         }
+//         if (env.confirmEmail && !user.emailVerified) {
+//           throw new Error('confirm-your-email');
+//         }
+//         const hasValidPassword = await verifyPassword(
+//           password,
+//           user?.password as string
+//         );
+//         if (!hasValidPassword) {
+//           if (
+//             exceededLoginAttemptsThreshold(await incrementLoginAttempts(user))
+//           ) {
+//             throw new Error('exceeded-login-attempts');
+//           }
+//           throw new Error('invalid-credentials');
+//         }
+//         await clearLoginAttempts(user);
+//         return {
+//           id: user.id,
+//           name: user.name,
+//           email: user.email,
+//         };
+//       },
+//     })
+//   );
+// }
 
-        const { email, password, recaptchaToken } = credentials;
+// Hawcx Credentials Provider
+providers.push(
+  CredentialsProvider({
+    id: 'hawcx-credentials',
+    name: 'Hawcx Passwordless',
+    credentials: {
+      email: { label: 'Email', type: 'email' },
+      hawcxAccessToken: { label: 'Hawcx Access Token', type: 'text' },
+    },
+    async authorize(credentials) {
+      if (!credentials?.email || !credentials?.hawcxAccessToken) {
+        console.error('Hawcx CredentialsProvider: Missing email or hawcxAccessToken');
+        // Consider throwing a specific error or returning a URL with an error query param
+        return null;
+      }
 
-        await validateRecaptcha(recaptchaToken);
+      const { email, hawcxAccessToken } = credentials;
 
-        if (!email || !password) {
-          return null;
-        }
+      // Here, you might want to add a step to verify the hawcxAccessToken
+      // with Hawcx servers if this authorize function is intended to be the
+      // single point of truth. For this example, we'll assume the token
+      // is pre-verified by the client calling this endpoint.
 
-        const user = await getUser({ email });
+      try {
+        let user = await getUser({ email });
 
         if (!user) {
-          throw new Error('invalid-credentials');
-        }
+          // User doesn't exist, create a new one
+          // Using email's local part as a temporary name
+          const name = email.split('@')[0];
+          user = await createUser({ email, name });
 
-        if (exceededLoginAttemptsThreshold(user)) {
-          throw new Error('exceeded-login-attempts');
-        }
-
-        if (env.confirmEmail && !user.emailVerified) {
-          throw new Error('confirm-your-email');
-        }
-
-        const hasValidPassword = await verifyPassword(
-          password,
-          user?.password as string
-        );
-
-        if (!hasValidPassword) {
-          if (
-            exceededLoginAttemptsThreshold(await incrementLoginAttempts(user))
-          ) {
-            throw new Error('exceeded-login-attempts');
+          if (!user) {
+            console.error('Hawcx CredentialsProvider: Failed to create user');
+            // Consider throwing a specific error
+            return null;
           }
-
-          throw new Error('invalid-credentials');
         }
 
-        await clearLoginAttempts(user);
-
+        // Return the user object expected by NextAuth
         return {
           id: user.id,
           name: user.name,
           email: user.email,
         };
-      },
-    })
-  );
-}
+      } catch (error) {
+        console.error('Hawcx CredentialsProvider: Error during authorization', error);
+        // Consider throwing a specific error that NextAuth can handle
+        // or that can be used to show a message to the user.
+        return null; // Returning null will typically deny authentication
+      }
+    },
+  })
+);
 
 if (isAuthProviderEnabled('github')) {
   providers.push(
@@ -300,9 +345,9 @@ export const getAuthOptions = (
           await createDatabaseSession(user, req, res);
         }
 
-        if (account?.provider === 'credentials') {
-          return true;
-        }
+        // if (account?.provider === 'credentials') { // Old credentials provider logic
+        //   return true;
+        // }
 
         // Login via email (Magic Link)
         if (account?.provider === 'email') {

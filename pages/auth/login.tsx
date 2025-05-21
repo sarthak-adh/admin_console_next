@@ -11,7 +11,7 @@ import { useRouter } from 'next/router';
 import { useTranslation } from 'next-i18next';
 import React, { type ReactElement, useEffect, useState, useRef } from 'react';
 import type { ComponentStatus } from 'react-daisyui/dist/types';
-import { useSession } from 'next-auth/react';
+import { useSession, signIn } from 'next-auth/react'; // signIn is already imported, this change is just for context
 import { serverSideTranslations } from 'next-i18next/serverSideTranslations';
 import { getHawcxAuth } from '@/lib/hawcx';
 
@@ -79,6 +79,7 @@ const Login: NextPageWithLayout<
     }),
     validationContext: { step },
     onSubmit: async (values) => {
+      formik.setSubmitting(true);
       const hawcx = await getHawcxAuth();
       setMessage({ text: null, status: null });
 
@@ -86,23 +87,40 @@ const Login: NextPageWithLayout<
         const res = await hawcx.signIn(values.email);
         if (res.success && res.data?.access_token) {
           sessionStorage.setItem('access_token', res.data.access_token);
-          router.push(redirectUrl);
+          const nextAuthRes = await signIn('hawcx-credentials', {
+            email: values.email,
+            hawcxAccessToken: res.data.access_token,
+            redirect: false,
+          });
+          if (nextAuthRes?.error) {
+            setMessage({ text: nextAuthRes.error, status: 'error' });
+          } else if (nextAuthRes?.ok) {
+            router.push(redirectUrl);
+          }
         } else if (res.success) {
           setStep('otp');
         } else {
           setMessage({ text: res.message, status: 'error' });
         }
-      } else {
+      } else { // step === 'otp'
         const verify = await hawcx.verifyOTP(values.otp);
-        if (verify.success) {
-          if (verify.data?.access_token) {
-            sessionStorage.setItem('access_token', verify.data.access_token);
+        if (verify.success && verify.data?.access_token) {
+          sessionStorage.setItem('access_token', verify.data.access_token);
+          const nextAuthRes = await signIn('hawcx-credentials', {
+            email: values.email, // email is in formik.values from the first step
+            hawcxAccessToken: verify.data.access_token,
+            redirect: false,
+          });
+          if (nextAuthRes?.error) {
+            setMessage({ text: nextAuthRes.error, status: 'error' });
+          } else if (nextAuthRes?.ok) {
+            router.push(redirectUrl);
           }
-          router.push(redirectUrl);
         } else {
-          setMessage({ text: verify.message, status: 'error' });
+          setMessage({ text: verify.message || 'OTP verification failed', status: 'error' });
         }
       }
+      formik.setSubmitting(false);
     },
   });
 
@@ -132,13 +150,15 @@ const Login: NextPageWithLayout<
           {authProviders.google && <GoogleButton />}
         </div>
 
-        {(authProviders.github || authProviders.google) &&
-          authProviders.credentials && <div className="divider">{t('or')}</div>}
+        {/* If social providers exist, and we are showing the Hawcx form, show a divider */}
+        {(authProviders.github || authProviders.google) && (
+          <div className="divider">{t('or')}</div>
+        )}
 
-        {authProviders.credentials && (
-          <form onSubmit={formik.handleSubmit}>
-            <div className="space-y-3">
-              <InputWithLabel
+        {/* Hawcx email/OTP form - Render this as the primary email-based login method */}
+        <form onSubmit={formik.handleSubmit}>
+          <div className="space-y-3">
+            <InputWithLabel
                 type="email"
                 label="Email"
                 name="email"

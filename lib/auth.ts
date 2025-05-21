@@ -25,6 +25,6 @@ export function authProviderEnabled() {
     google: isAuthProviderEnabled('google'),
     email: isAuthProviderEnabled('email'),
     saml: isAuthProviderEnabled('saml'),
-    credentials: isAuthProviderEnabled('credentials'),
+    credentials: false, // Password-based credentials provider has been removed
   };
 }
